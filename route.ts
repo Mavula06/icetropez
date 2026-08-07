@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/admin';
-import { planSchema } from '@/lib/validation';
+import { formatCurrency } from '@/lib/constants';
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -19,108 +19,79 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
   const body = await req.json();
-  const parsed = planSchema.safeParse(body);
-  if (!parsed.success)
-    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? 'Invalid input' }, { status: 400 });
+  const { depositId, action } = body as { depositId: string; action: 'approve' | 'reject' };
+  if (!depositId || !action) return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
 
   const service = createServiceClient();
-  const { data, error } = await service.from('investment_plans').insert({
-    name: parsed.data.name,
-    description: parsed.data.description || null,
-    min_amount: parsed.data.min_amount,
-    max_amount: parsed.data.max_amount,
-    duration_days: parsed.data.duration_days,
-    return_rate: parsed.data.return_rate,
-    earnings_type: parsed.data.earnings_type,
-    is_active: parsed.data.is_active,
-  }).select().single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  await service.from('audit_logs').insert({
-    actor_id: user.id,
-    action: 'create_plan',
-    entity: 'investment_plans',
-    entity_id: data.id,
-    metadata: parsed.data,
-  });
-
-  return NextResponse.json({ ok: true, plan: data });
-}
-
-export async function PUT(req: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
+  const { data: deposit } = await service
+    .from('deposits')
+    .select('*')
+    .eq('id', depositId)
     .maybeSingle();
-  if (!profile || profile.role !== 'admin')
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  if (!deposit) return NextResponse.json({ error: 'Deposit not found' }, { status: 404 });
+  if (deposit.status !== 'pending')
+    return NextResponse.json({ error: 'Deposit already processed' }, { status: 400 });
 
-  const body = await req.json();
-  const { planId, ...updates } = body as { planId: string } & Record<string, unknown>;
-  if (!planId) return NextResponse.json({ error: 'Missing planId' }, { status: 400 });
+  if (action === 'reject') {
+    await service.from('deposits').update({ status: 'rejected' }).eq('id', depositId);
+    await service.from('notifications').insert({
+      user_id: deposit.user_id,
+      type: 'warning',
+      title: 'Deposit rejected',
+      message: `Your deposit of ${formatCurrency(Number(deposit.amount))} (ref: ${deposit.reference}) was rejected.`,
+    });
+    await service.from('audit_logs').insert({
+      actor_id: user.id,
+      action: 'reject_deposit',
+      entity: 'deposits',
+      entity_id: depositId,
+      metadata: { amount: deposit.amount, reference: deposit.reference },
+    });
+    return NextResponse.json({ ok: true, status: 'rejected' });
+  }
 
-  const parsed = planSchema.partial().safeParse(updates);
-  if (!parsed.success)
-    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? 'Invalid input' }, { status: 400 });
-
-  const service = createServiceClient();
-  const { data, error } = await service.from('investment_plans')
-    .update(parsed.data)
-    .eq('id', planId)
-    .select()
-    .single();
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  await service.from('audit_logs').insert({
-    actor_id: user.id,
-    action: 'update_plan',
-    entity: 'investment_plans',
-    entity_id: planId,
-    metadata: parsed.data,
-  });
-
-  return NextResponse.json({ ok: true, plan: data });
-}
-
-export async function DELETE(req: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('role')
-    .eq('id', user.id)
+  // Approve: credit wallet + create transaction
+  const { data: wallet } = await service
+    .from('wallets')
+    .select('*')
+    .eq('user_id', deposit.user_id)
     .maybeSingle();
-  if (!profile || profile.role !== 'admin')
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  if (!wallet) return NextResponse.json({ error: 'Wallet not found' }, { status: 500 });
 
-  const { searchParams } = new URL(req.url);
-  const planId = searchParams.get('id');
-  if (!planId) return NextResponse.json({ error: 'Missing plan id' }, { status: 400 });
+  const newBalance = Number(wallet.balance) + Number(deposit.amount);
+  const newTotalDeposited = Number(wallet.total_deposited) + Number(deposit.amount);
 
-  const service = createServiceClient();
-  const { error } = await service.from('investment_plans').delete().eq('id', planId);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  await service.from('wallets').update({
+    balance: newBalance,
+    total_deposited: newTotalDeposited,
+  }).eq('id', wallet.id);
+
+  await service.from('deposits').update({ status: 'approved' }).eq('id', depositId);
+
+  await service.from('transactions').insert({
+    user_id: deposit.user_id,
+    type: 'deposit',
+    amount: deposit.amount,
+    description: `Deposit approved (ref: ${deposit.reference})`,
+    reference: deposit.reference,
+    balance_after: newBalance,
+  });
+
+  await service.from('notifications').insert({
+    user_id: deposit.user_id,
+    type: 'success',
+    title: 'Deposit approved',
+    message: `Your deposit of ${formatCurrency(Number(deposit.amount))} has been credited to your wallet.`,
+  });
 
   await service.from('audit_logs').insert({
     actor_id: user.id,
-    action: 'delete_plan',
-    entity: 'investment_plans',
-    entity_id: planId,
-    metadata: {},
+    action: 'approve_deposit',
+    entity: 'deposits',
+    entity_id: depositId,
+    metadata: { amount: deposit.amount, reference: deposit.reference, new_balance: newBalance },
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, status: 'approved' });
 }
