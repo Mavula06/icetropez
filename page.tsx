@@ -1,106 +1,142 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { toast } from 'sonner';
+import { Check, Loader2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
-import { formatDateTime } from '@/lib/constants';
-import { Card, CardContent } from '@/components/ui/card';
+import { formatCurrency, formatDate } from '@/lib/constants';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
-interface AuditLogRow {
+interface DepositRow {
   id: string;
-  action: string;
-  entity: string;
-  entity_id: string | null;
-  metadata: Record<string, unknown> | null;
+  amount: number;
+  reference: string;
+  proof_url: string | null;
+  status: 'pending' | 'approved' | 'rejected';
   created_at: string;
-  actor: { email: string; full_name: string | null } | { email: string; full_name: string | null }[] | null;
+  user: { email: string; full_name: string | null } | null;
 }
 
-export default function AdminAuditLogsPage() {
+export default function AdminDepositsPage() {
   const supabase = createClient();
-  const [logs, setLogs] = useState<AuditLogRow[]>([]);
+  const [deposits, setDeposits] = useState<DepositRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [processing, setProcessing] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
+
+  const load = async () => {
+    let q = supabase.from('deposits').select('*, user:profiles(email, full_name)').order('created_at', { ascending: false });
+    if (filter !== 'all') q = q.eq('status', filter);
+    const { data } = await q;
+    setDeposits((data as DepositRow[]) ?? []);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from('audit_logs')
-        .select('*, actor:profiles(email, full_name)')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      setLogs((data as unknown as AuditLogRow[]) ?? []);
-      setLoading(false);
-    })();
-  }, []);
+    load();
+  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const exportCsv = () => {
-    const headers = ['Date', 'Actor', 'Action', 'Entity', 'Entity ID', 'Metadata'];
-    const rows = logs.map((l) => {
-      const actorVal = Array.isArray(l.actor) ? l.actor[0]?.email ?? '' : l.actor?.email ?? '';
-      return [
-        formatDateTime(l.created_at), actorVal, l.action, l.entity,
-        l.entity_id ?? '', l.metadata ? JSON.stringify(l.metadata) : '',
-      ];
+  const processDeposit = async (depositId: string, action: 'approve' | 'reject') => {
+    setProcessing(depositId);
+    const res = await fetch('/api/admin/deposits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ depositId, action }),
     });
-    const csv = [headers, ...rows].map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'audit-logs.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+    const json = await res.json();
+    setProcessing(null);
+    if (!res.ok) {
+      toast.error(json.error ?? 'Failed to process deposit');
+      return;
+    }
+    toast.success(`Deposit ${json.status}.`);
+    load();
   };
+
+  const statusVariant = (s: DepositRow['status']) =>
+    s === 'approved' ? 'default' : s === 'rejected' ? 'destructive' : 'secondary';
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Audit Logs</h1>
-          <p className="text-sm text-muted-foreground">Immutable record of all admin actions.</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={exportCsv} disabled={logs.length === 0}>
-          <Download className="mr-2 h-4 w-4" /> Export CSV
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Deposits</h1>
+        <p className="text-sm text-muted-foreground">Review and approve user deposit requests.</p>
+      </div>
+
+      <div className="flex gap-2">
+        {(['pending', 'approved', 'rejected', 'all'] as const).map((f) => (
+          <Button
+            key={f}
+            size="sm"
+            variant={filter === f ? 'default' : 'outline'}
+            onClick={() => setFilter(f)}
+            className="capitalize"
+          >
+            {f}
+          </Button>
+        ))}
       </div>
 
       <Card>
         <CardContent className="pt-6">
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : logs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No audit logs yet.</p>
+          ) : deposits.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No deposits found.</p>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>
-                  <TableHead>Admin</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Entity</TableHead>
-                  <TableHead>Entity ID</TableHead>
-                  <TableHead>Metadata</TableHead>
+                  <TableHead>User</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead>Proof</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {logs.map((l) => {
-                  const actorVal = Array.isArray(l.actor) ? l.actor[0]?.email ?? '' : l.actor?.email ?? '';
-                  return (
-                    <TableRow key={l.id}>
-                      <TableCell className="whitespace-nowrap text-xs">{formatDateTime(l.created_at)}</TableCell>
-                      <TableCell className="text-sm">{actorVal}</TableCell>
-                      <TableCell><Badge variant="secondary" className="font-mono text-xs">{l.action}</Badge></TableCell>
-                      <TableCell className="text-sm">{l.entity}</TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">{l.entity_id?.slice(0, 8) ?? '—'}</TableCell>
-                      <TableCell className="max-w-xs truncate font-mono text-xs text-muted-foreground">
-                        {l.metadata ? JSON.stringify(l.metadata).slice(0, 80) : '—'}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {deposits.map((d) => (
+                  <TableRow key={d.id}>
+                    <TableCell className="whitespace-nowrap">{formatDate(d.created_at)}</TableCell>
+                    <TableCell>{d.user?.full_name ?? d.user?.email ?? 'Unknown'}</TableCell>
+                    <TableCell className="font-mono text-xs">{d.reference}</TableCell>
+                    <TableCell>
+                      {d.proof_url ? (
+                        <a href={d.proof_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">View</a>
+                      ) : '—'}
+                    </TableCell>
+                    <TableCell className="text-right font-medium">{formatCurrency(Number(d.amount))}</TableCell>
+                    <TableCell><Badge variant={statusVariant(d.status)} className="capitalize">{d.status}</Badge></TableCell>
+                    <TableCell>
+                      {d.status === 'pending' ? (
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            onClick={() => processDeposit(d.id, 'approve')}
+                            disabled={processing === d.id}
+                          >
+                            {processing === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => processDeposit(d.id, 'reject')}
+                            disabled={processing === d.id}
+                          >
+                            {processing === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           )}
