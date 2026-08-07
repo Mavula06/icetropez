@@ -1,107 +1,149 @@
 'use client';
 
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2 } from 'lucide-react';
-import { useAuth } from '@/components/providers/auth-provider';
-import { profileSchema, type ProfileInput } from '@/lib/validation';
+import { Copy, Gift, Share2, Users } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { formatCurrency, formatDate } from '@/lib/constants';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { StatCard } from '@/components/dashboard/stat-card';
 
-export default function ProfilePage() {
-  const { profile, refreshProfile } = useAuth();
+interface ReferralRow {
+  id: string;
+  earnings: number;
+  status: 'pending' | 'paid';
+  created_at: string;
+  referred: { email: string; full_name: string | null } | null;
+}
+
+export default function ReferralsPage() {
   const supabase = createClient();
-  const [loading, setLoading] = useState(false);
+  const [referralCode, setReferralCode] = useState('');
+  const [referralLink, setReferralLink] = useState('');
+  const [referrals, setReferrals] = useState<ReferralRow[]>([]);
+  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [referredCount, setReferredCount] = useState(0);
+  const [percentage, setPercentage] = useState(10);
+  const [loading, setLoading] = useState(true);
 
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm<ProfileInput>({
-    resolver: zodResolver(profileSchema),
-    defaultValues: {
-      full_name: profile?.full_name ?? '',
-      phone: profile?.phone ?? '',
-    },
-  });
-
-  const onSubmit = async (values: ProfileInput) => {
-    if (!profile) return;
-    setLoading(true);
-    const { error } = await supabase
-      .from('profiles')
-      .update({
-        full_name: values.full_name,
-        phone: values.phone || null,
-      })
-      .eq('id', profile.id);
+  const load = async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+    const [{ data: profile }, { data: refs }, { data: settings }] = await Promise.all([
+      supabase.from('profiles').select('referral_code').eq('id', user.id).maybeSingle(),
+      supabase
+        .from('referrals')
+        .select('id, earnings, status, created_at, referred:referred_id(email, full_name)')
+        .eq('referrer_id', user.id)
+        .order('created_at', { ascending: false }),
+      supabase.from('settings').select('referral_percentage').maybeSingle(),
+    ]);
+    const code = profile?.referral_code ?? '';
+    setReferralCode(code);
+    setReferralLink(`${window.location.origin}/auth/register?ref=${code}`);
+    const rows = (refs ?? []) as unknown as ReferralRow[];
+    setReferrals(rows);
+    setTotalEarnings(rows.reduce((s, r) => s + Number(r.earnings), 0));
+    setReferredCount(rows.length);
+    setPercentage(settings?.referral_percentage ?? 10);
     setLoading(false);
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-    await refreshProfile();
-    toast.success('Profile updated.');
   };
 
-  if (!profile) return null;
+  useEffect(() => {
+    load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success(`${label} copied to clipboard.`);
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Profile</h1>
-        <p className="text-sm text-muted-foreground">Manage your account details.</p>
+        <h1 className="text-2xl font-bold">Referrals</h1>
+        <p className="text-sm text-muted-foreground">
+          Invite friends and earn {percentage}% on their investments.
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard label="Total referrals" value={String(referredCount)} icon={Users} accent="primary" />
+        <StatCard label="Total earnings" value={formatCurrency(totalEarnings)} icon={Gift} accent="success" />
+        <StatCard label="Commission rate" value={`${percentage}%`} icon={Share2} accent="warning" />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Your referral code</CardTitle>
+            <CardDescription>Share this code with friends.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Input readOnly value={referralCode} className="font-mono text-lg" />
+              <Button variant="outline" onClick={() => copyToClipboard(referralCode, 'Code')}>
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Your referral link</CardTitle>
+            <CardDescription>Friends who sign up via this link become your referrals.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Input readOnly value={referralLink} className="text-sm" />
+              <Button variant="outline" onClick={() => copyToClipboard(referralLink, 'Link')}>
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
-        <CardHeader>
-          <div className="flex items-center gap-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-xl font-bold text-primary">
-              {(profile.full_name ?? profile.email)[0].toUpperCase()}
-            </div>
-            <div>
-              <CardTitle>{profile.full_name ?? 'User'}</CardTitle>
-              <CardDescription>{profile.email}</CardDescription>
-              <Badge className="mt-1 capitalize" variant={profile.role === 'admin' ? 'default' : 'secondary'}>
-                {profile.role}
-              </Badge>
-            </div>
-          </div>
-        </CardHeader>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Personal information</CardTitle>
-          <CardDescription>Update your name and phone number.</CardDescription>
-        </CardHeader>
+        <CardHeader><CardTitle>Referral history</CardTitle></CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="full_name">Full name</Label>
-              <Input id="full_name" {...register('full_name')} />
-              {errors.full_name && <p className="text-sm text-destructive">{errors.full_name.message}</p>}
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : referrals.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Users className="h-10 w-10 text-muted-foreground/50" />
+              <p className="mt-3 text-sm text-muted-foreground">No referrals yet. Share your link to get started.</p>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="phone">Phone</Label>
-              <Input id="phone" placeholder="+27 71 234 5678" {...register('phone')} />
-              {errors.phone && <p className="text-sm text-destructive">{errors.phone.message}</p>}
-            </div>
-            <div className="space-y-2">
-              <Label>Referral code</Label>
-              <Input readOnly value={profile.referral_code} className="font-mono" />
-            </div>
-            <Button type="submit" disabled={loading}>
-              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Save changes
-            </Button>
-          </form>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Referred user</TableHead>
+                  <TableHead className="text-right">Earnings</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {referrals.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell className="whitespace-nowrap">{formatDate(r.created_at)}</TableCell>
+                    <TableCell>{r.referred?.full_name ?? r.referred?.email ?? 'User'}</TableCell>
+                    <TableCell className="text-right font-medium">{formatCurrency(Number(r.earnings))}</TableCell>
+                    <TableCell><Badge variant={r.status === 'paid' ? 'default' : 'secondary'} className="capitalize">{r.status}</Badge></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </div>
