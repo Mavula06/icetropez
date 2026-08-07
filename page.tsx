@@ -1,147 +1,205 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
-import { Check, Loader2, X } from 'lucide-react';
+import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
-import { formatCurrency, formatDate } from '@/lib/constants';
+import { planSchema, type PlanInput } from '@/lib/validation';
+import { formatCurrency } from '@/lib/constants';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+} from '@/components/ui/dialog';
 
-interface DepositRow {
+interface Plan {
   id: string;
-  amount: number;
-  reference: string;
-  proof_url: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-  created_at: string;
-  user: { email: string; full_name: string | null } | null;
+  name: string;
+  description: string | null;
+  min_amount: number;
+  max_amount: number;
+  duration_days: number;
+  return_rate: number;
+  earnings_type: 'daily' | 'maturity';
+  is_active: boolean;
 }
 
-export default function AdminDepositsPage() {
+export default function AdminPlansPage() {
   const supabase = createClient();
-  const [deposits, setDeposits] = useState<DepositRow[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Plan | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const {
+    register, handleSubmit, reset, setValue, watch,
+    formState: { errors },
+  } = useForm<PlanInput>({ resolver: zodResolver(planSchema) });
+
+  const isActive = watch('is_active');
 
   const load = async () => {
-    let q = supabase.from('deposits').select('*, user:profiles(email, full_name)').order('created_at', { ascending: false });
-    if (filter !== 'all') q = q.eq('status', filter);
-    const { data } = await q;
-    setDeposits((data as DepositRow[]) ?? []);
+    const { data } = await supabase.from('investment_plans').select('*').order('min_amount');
+    setPlans((data as Plan[]) ?? []);
     setLoading(false);
   };
 
   useEffect(() => {
     load();
-  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const processDeposit = async (depositId: string, action: 'approve' | 'reject') => {
-    setProcessing(depositId);
-    const res = await fetch('/api/admin/deposits', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ depositId, action }),
+  const openCreate = () => {
+    setEditing(null);
+    reset({ name: '', description: '', min_amount: 80, max_amount: 10000, duration_days: 30, return_rate: 10, earnings_type: 'maturity', is_active: true });
+    setOpen(true);
+  };
+
+  const openEdit = (plan: Plan) => {
+    setEditing(plan);
+    reset({
+      name: plan.name, description: plan.description ?? '', min_amount: plan.min_amount,
+      max_amount: plan.max_amount, duration_days: plan.duration_days, return_rate: plan.return_rate,
+      earnings_type: plan.earnings_type, is_active: plan.is_active,
     });
-    const json = await res.json();
-    setProcessing(null);
-    if (!res.ok) {
-      toast.error(json.error ?? 'Failed to process deposit');
-      return;
+    setOpen(true);
+  };
+
+  const onSubmit = async (values: PlanInput) => {
+    setSubmitting(true);
+    const payload = { ...values, description: values.description || undefined };
+    if (editing) {
+      const res = await fetch('/api/admin/plans', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planId: editing.id, ...payload }),
+      });
+      const json = await res.json();
+      if (!res.ok) { toast.error(json.error); setSubmitting(false); return; }
+      toast.success('Plan updated.');
+    } else {
+      const res = await fetch('/api/admin/plans', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      if (!res.ok) { toast.error(json.error); setSubmitting(false); return; }
+      toast.success('Plan created.');
     }
-    toast.success(`Deposit ${json.status}.`);
+    setSubmitting(false);
+    setOpen(false);
     load();
   };
 
-  const statusVariant = (s: DepositRow['status']) =>
-    s === 'approved' ? 'default' : s === 'rejected' ? 'destructive' : 'secondary';
+  const deletePlan = async (id: string) => {
+    if (!confirm('Delete this plan? Active investments referencing it will remain.')) return;
+    const res = await fetch(`/api/admin/plans?id=${id}`, { method: 'DELETE' });
+    if (!res.ok) { toast.error('Failed to delete plan'); return; }
+    toast.success('Plan deleted.');
+    load();
+  };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Deposits</h1>
-        <p className="text-sm text-muted-foreground">Review and approve user deposit requests.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Investment Plans</h1>
+          <p className="text-sm text-muted-foreground">Configure plans, rates, and durations.</p>
+        </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger asChild>
+            <Button onClick={openCreate}><Plus className="mr-2 h-4 w-4" /> New plan</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{editing ? 'Edit plan' : 'New investment plan'}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="name">Name</Label>
+                <Input id="name" {...register('name')} />
+                {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="description">Description</Label>
+                <Textarea id="description" rows={2} {...register('description')} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="min_amount">Min amount</Label>
+                  <Input id="min_amount" type="number" step="0.01" {...register('min_amount', { valueAsNumber: true })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="max_amount">Max amount</Label>
+                  <Input id="max_amount" type="number" step="0.01" {...register('max_amount', { valueAsNumber: true })} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label htmlFor="duration_days">Duration (days)</Label>
+                  <Input id="duration_days" type="number" {...register('duration_days', { valueAsNumber: true })} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="return_rate">Return rate (%)</Label>
+                  <Input id="return_rate" type="number" step="0.01" {...register('return_rate', { valueAsNumber: true })} />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="earnings_type">Earnings type</Label>
+                <select id="earnings_type" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" {...register('earnings_type')}>
+                  <option value="maturity">Maturity</option>
+                  <option value="daily">Daily</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <Switch checked={isActive} onCheckedChange={(v) => setValue('is_active', v, { shouldValidate: true })} />
+                <Label>Active</Label>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={submitting}>
+                  {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {editing ? 'Save' : 'Create'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
 
-      <div className="flex gap-2">
-        {(['pending', 'approved', 'rejected', 'all'] as const).map((f) => (
-          <Button
-            key={f}
-            size="sm"
-            variant={filter === f ? 'default' : 'outline'}
-            onClick={() => setFilter(f)}
-            className="capitalize"
-          >
-            {f}
-          </Button>
-        ))}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : plans.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No plans configured.</p>
+        ) : (
+          plans.map((plan) => (
+            <Card key={plan.id}>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <CardTitle>{plan.name}</CardTitle>
+                <Badge variant={plan.is_active ? 'default' : 'secondary'}>{plan.is_active ? 'Active' : 'Inactive'}</Badge>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {plan.description && <p className="text-muted-foreground">{plan.description}</p>}
+                <div className="flex justify-between"><span className="text-muted-foreground">Return</span><span className="font-medium">{plan.return_rate}%</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Duration</span><span className="font-medium">{plan.duration_days} days</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Range</span><span className="font-medium">{formatCurrency(plan.min_amount)} – {formatCurrency(plan.max_amount)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Earnings</span><span className="font-medium capitalize">{plan.earnings_type}</span></div>
+                <div className="flex gap-2 pt-2">
+                  <Button size="sm" variant="outline" onClick={() => openEdit(plan)}><Pencil className="mr-1 h-3.5 w-3.5" /> Edit</Button>
+                  <Button size="sm" variant="destructive" onClick={() => deletePlan(plan.id)}><Trash2 className="h-3.5 w-3.5" /></Button>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        )}
       </div>
-
-      <Card>
-        <CardContent className="pt-6">
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : deposits.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No deposits found.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead>Reference</TableHead>
-                  <TableHead>Proof</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {deposits.map((d) => (
-                  <TableRow key={d.id}>
-                    <TableCell className="whitespace-nowrap">{formatDate(d.created_at)}</TableCell>
-                    <TableCell>{d.user?.full_name ?? d.user?.email ?? 'Unknown'}</TableCell>
-                    <TableCell className="font-mono text-xs">{d.reference}</TableCell>
-                    <TableCell>
-                      {d.proof_url ? (
-                        <a href={d.proof_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">View</a>
-                      ) : '—'}
-                    </TableCell>
-                    <TableCell className="text-right font-medium">{formatCurrency(Number(d.amount))}</TableCell>
-                    <TableCell><Badge variant={statusVariant(d.status)} className="capitalize">{d.status}</Badge></TableCell>
-                    <TableCell>
-                      {d.status === 'pending' ? (
-                        <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            onClick={() => processDeposit(d.id, 'approve')}
-                            disabled={processing === d.id}
-                          >
-                            {processing === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => processDeposit(d.id, 'reject')}
-                            disabled={processing === d.id}
-                          >
-                            {processing === d.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
-                          </Button>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
