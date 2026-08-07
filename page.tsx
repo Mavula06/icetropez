@@ -1,182 +1,143 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { toast } from 'sonner';
-import { ArrowUpFromLine, Loader2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
-import { withdrawalSchema, type WithdrawalInput } from '@/lib/validation';
+import Link from 'next/link';
+import { ArrowDownToLine, ArrowUpFromLine, TrendingUp, Wallet as WalletIcon } from 'lucide-react';
+import { createClient } from '@/lib/supabase/server';
 import { formatCurrency, formatDate } from '@/lib/constants';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { StatCard } from '@/components/dashboard/stat-card';
+import { WalletChart } from '@/components/dashboard/wallet-chart';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
-interface Wallet {
-  balance: number;
-}
+export const dynamic = 'force-dynamic';
 
-interface WithdrawalRow {
-  id: string;
-  amount: number;
-  bank_name: string | null;
-  account_number: string | null;
-  branch_code: string | null;
-  account_holder: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-  admin_note: string | null;
-  created_at: string;
-}
-
-export default function WithdrawalsPage() {
-  const supabase = createClient();
-  const [wallet, setWallet] = useState<Wallet | null>(null);
-  const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-
+export default async function DashboardPage() {
+  const supabase = await createClient();
   const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors },
-  } = useForm<WithdrawalInput>({ resolver: zodResolver(withdrawalSchema) });
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
 
-  const load = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) return;
-    const [{ data: w }, { data: wd }] = await Promise.all([
-      supabase.from('wallets').select('balance').eq('user_id', user.id).maybeSingle(),
-      supabase.from('withdrawals').select('*').order('created_at', { ascending: false }),
-    ]);
-    setWallet(w as Wallet | null);
-    setWithdrawals((wd as WithdrawalRow[]) ?? []);
-    setLoading(false);
-  };
+  const [{ data: wallet }, { data: transactions }, { data: investments }] = await Promise.all([
+    supabase.from('wallets').select('*').eq('user_id', user.id).maybeSingle(),
+    supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20),
+    supabase
+      .from('investments')
+      .select('*, plan:investment_plans(*)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(5),
+  ]);
 
-  useEffect(() => {
-    load();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const balance = wallet?.balance ?? 0;
+  const totalDeposited = wallet?.total_deposited ?? 0;
+  const totalWithdrawn = wallet?.total_withdrawn ?? 0;
+  const totalEarnings = wallet?.total_earnings ?? 0;
 
-  const onSubmit = async (values: WithdrawalInput) => {
-    const balance = wallet?.balance ?? 0;
-    if (values.amount > balance) {
-      toast.error('Insufficient wallet balance.');
-      return;
-    }
-    setSubmitting(true);
-    const { error } = await supabase.from('withdrawals').insert({
-      amount: values.amount,
-      bank_name: values.bank_name,
-      account_number: values.account_number,
-      branch_code: values.branch_code,
-      account_holder: values.account_holder,
-      status: 'pending',
-    });
-    setSubmitting(false);
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-    toast.success('Withdrawal request submitted. Pending admin approval.');
-    reset();
-    load();
-  };
+  // Build chart data from last 14 transactions (reversed for chronological order)
+  const chartData = (transactions ?? [])
+    .slice()
+    .reverse()
+    .slice(-14)
+    .map((t) => ({
+      label: formatDate(t.created_at).split(' ')[1] ?? formatDate(t.created_at),
+      value: Number(t.balance_after),
+    }));
 
-  const statusVariant = (s: WithdrawalRow['status']) =>
-    s === 'approved' ? 'default' : s === 'rejected' ? 'destructive' : 'secondary';
+  const recent = (transactions ?? []).slice(0, 6);
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Withdrawals</h1>
-        <p className="text-sm text-muted-foreground">Request a withdrawal to your bank account.</p>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <p className="text-sm text-muted-foreground">An overview of your wallet and investments.</p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Wallet balance" value={formatCurrency(balance)} icon={WalletIcon} accent="primary" />
+        <StatCard label="Total deposited" value={formatCurrency(totalDeposited)} icon={ArrowDownToLine} accent="success" />
+        <StatCard label="Total withdrawn" value={formatCurrency(totalWithdrawn)} icon={ArrowUpFromLine} accent="warning" />
+        <StatCard label="Total earnings" value={formatCurrency(totalEarnings)} icon={TrendingUp} accent="success" />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-1">
+        <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>New withdrawal</CardTitle>
-            <CardDescription>
-              Available balance: <span className="font-semibold text-foreground">{formatCurrency(wallet?.balance ?? 0)}</span>
-            </CardDescription>
+            <CardTitle>Wallet balance history</CardTitle>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="amount">Amount (R)</Label>
-                <Input id="amount" type="number" step="0.01" placeholder="100.00" {...register('amount', { valueAsNumber: true })} />
-                {errors.amount && <p className="text-sm text-destructive">{errors.amount.message}</p>}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="account_holder">Account holder</Label>
-                <Input id="account_holder" placeholder="Jane Doe" {...register('account_holder')} />
-                {errors.account_holder && <p className="text-sm text-destructive">{errors.account_holder.message}</p>}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="bank_name">Bank name</Label>
-                <Input id="bank_name" placeholder="First National Bank" {...register('bank_name')} />
-                {errors.bank_name && <p className="text-sm text-destructive">{errors.bank_name.message}</p>}
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label htmlFor="account_number">Account number</Label>
-                  <Input id="account_number" placeholder="62345678901" {...register('account_number')} />
-                  {errors.account_number && <p className="text-sm text-destructive">{errors.account_number.message}</p>}
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="branch_code">Branch code</Label>
-                  <Input id="branch_code" placeholder="250655" {...register('branch_code')} />
-                  {errors.branch_code && <p className="text-sm text-destructive">{errors.branch_code.message}</p>}
-                </div>
-              </div>
-              <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Request withdrawal
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle>Withdrawal history</CardTitle></CardHeader>
-          <CardContent>
-            {loading ? (
-              <p className="text-sm text-muted-foreground">Loading...</p>
-            ) : withdrawals.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No withdrawal requests yet.</p>
+            {chartData.length > 0 ? (
+              <WalletChart data={chartData} />
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Bank</TableHead>
-                    <TableHead>Account</TableHead>
-                    <TableHead className="text-right">Amount</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {withdrawals.map((w) => (
-                    <TableRow key={w.id}>
-                      <TableCell className="whitespace-nowrap">{formatDate(w.created_at)}</TableCell>
-                      <TableCell>{w.bank_name}</TableCell>
-                      <TableCell className="font-mono text-xs">{w.account_number}</TableCell>
-                      <TableCell className="text-right font-medium">{formatCurrency(Number(w.amount))}</TableCell>
-                      <TableCell><Badge variant={statusVariant(w.status)} className="capitalize">{w.status}</Badge></TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <div className="flex h-[260px] items-center justify-center text-sm text-muted-foreground">
+                No transactions yet. Make your first deposit to see your balance grow.
+              </div>
             )}
           </CardContent>
         </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle>Active investments</CardTitle>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/dashboard/investments">View all</Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(investments ?? []).length === 0 && (
+              <p className="text-sm text-muted-foreground">No investments yet.</p>
+            )}
+            {(investments ?? []).map((inv) => (
+              <div key={inv.id} className="rounded-lg border p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">{inv.plan?.name ?? 'Plan'}</p>
+                  <Badge variant={inv.status === 'active' ? 'default' : 'secondary'}>
+                    {inv.status}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {formatCurrency(Number(inv.amount))} · ends {formatDate(inv.end_date)}
+                </p>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       </div>
+
+      <Card>
+        <CardHeader className="flex-row items-center justify-between space-y-0">
+          <CardTitle>Recent transactions</CardTitle>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/transactions">View all</Link>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {recent.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No transactions yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {recent.map((t) => {
+                const positive = ['deposit', 'earnings', 'referral', 'bonus'].includes(t.type);
+                return (
+                  <div key={t.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <p className="text-sm font-medium">{t.description}</p>
+                      <p className="text-xs text-muted-foreground">{formatDate(t.created_at)}</p>
+                    </div>
+                    <p className={`text-sm font-semibold ${positive ? 'text-success' : 'text-destructive'}`}>
+                      {positive ? '+' : '-'}{formatCurrency(Number(t.amount))}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
