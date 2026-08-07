@@ -1,91 +1,41 @@
-import './globals.css';
-import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
-import { ThemeProvider } from '@/components/providers/theme-provider';
-import { AuthProvider } from '@/components/providers/auth-provider';
-import { Toaster } from '@/components/ui/sonner';
-import { APP_NAME, APP_TAGLINE } from '@/lib/constants';
+import { redirect } from 'next/navigation';
+import { createClient } from '@/lib/supabase/server';
+import { DashboardSidebar } from '@/components/dashboard/dashboard-sidebar';
+import { DashboardMobileNav } from '@/components/dashboard/dashboard-mobile-nav';
+import { ThemeToggle } from '@/components/shared/theme-toggle';
 
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-  display: 'swap',
-});
-
-export const metadata: Metadata = {
-  title: {
-    default: `${APP_NAME} — ${APP_TAGLINE}`,
-    template: `%s | ${APP_NAME}`,
-  },
-  description:
-    'Icetropez.Vest is a modern investment platform offering managed investment plans with transparent daily and maturity-based earnings.',
-  keywords: [
-    'investment',
-    'investing',
-    'wealth management',
-    'portfolio',
-    'financial growth',
-    'South Africa',
-  ],
-  authors: [{ name: APP_NAME }],
-  openGraph: {
-    type: 'website',
-    locale: 'en_ZA',
-    title: `${APP_NAME} — ${APP_TAGLINE}`,
-    description:
-      'Smart investing, steady growth. Managed investment plans with transparent earnings.',
-    siteName: APP_NAME,
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: `${APP_NAME} — ${APP_TAGLINE}`,
-    description:
-      'Smart investing, steady growth. Managed investment plans with transparent earnings.',
-  },
-  robots: { index: true, follow: true },
-  alternates: { canonical: '/' },
-};
-
-const jsonLd = {
-  '@context': 'https://schema.org',
-  '@type': 'Organization',
-  name: APP_NAME,
-  description: APP_TAGLINE,
-  url: 'https://icetropez.vest',
-  email: 'support@icetropez.vest',
-  telephone: '+27 11 555 0100',
-  address: {
-    '@type': 'PostalAddress',
-    addressLocality: 'Sandton',
-    addressRegion: 'Johannesburg',
-    addressCountry: 'ZA',
-  },
-};
-
-export default function RootLayout({
+export default async function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect('/auth/login');
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (!profile) redirect('/auth/login');
+
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} font-sans`}>
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="light"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <AuthProvider>
-            {children}
-            <Toaster richColors position="top-right" />
-          </AuthProvider>
-          <script
-            type="application/ld+json"
-            dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-          />
-        </ThemeProvider>
-      </body>
-    </html>
+    <div className="flex min-h-screen bg-muted/20">
+      <DashboardSidebar />
+      <div className="flex flex-1 flex-col">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-background/80 px-4 backdrop-blur md:px-6">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-muted-foreground">
+              Welcome back, <span className="text-foreground">{profile.full_name ?? profile.email}</span>
+            </span>
+          </div>
+          <ThemeToggle />
+        </header>
+        <main className="flex-1 p-4 pb-20 md:p-6 md:pb-6">{children}</main>
+        <DashboardMobileNav />
+      </div>
+    </div>
   );
 }
