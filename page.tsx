@@ -1,127 +1,136 @@
+'use client';
+
+import { useState } from 'react';
 import Link from 'next/link';
-import { ArrowDownToLine, ArrowUpFromLine, TrendingUp, Users, Wallet } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
-import { formatCurrency, formatDate } from '@/lib/constants';
-import { StatCard } from '@/components/dashboard/stat-card';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from 'sonner';
+import { Loader2, ShieldCheck } from 'lucide-react';
+import { registerSchema, type RegisterInput } from '@/lib/validation';
+import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-export const dynamic = 'force-dynamic';
+export default function RegisterPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const supabase = createClient();
+  const [loading, setLoading] = useState(false);
 
-export default async function AdminOverview() {
-  const supabase = await createClient();
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<RegisterInput>({
+    resolver: zodResolver(registerSchema),
+    defaultValues: { referral_code: searchParams.get('ref') ?? '' },
+  });
 
-  const [{ count: userCount }, { count: depositCount }, { count: withdrawalCount }, { count: investmentCount }] =
-    await Promise.all([
-      supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'user'),
-      supabase.from('deposits').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-      supabase.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
-      supabase.from('investments').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-    ]);
+  const onSubmit = async (values: RegisterInput) => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: values.email,
+        password: values.password,
+        options: {
+          data: { full_name: values.full_name, phone: values.phone ?? '' },
+        },
+      });
+      if (error) throw error;
+      if (!data.user) throw new Error('Registration failed');
+      const userId = data.user.id;
 
-  const { data: pendingDeposits } = await supabase
-    .from('deposits')
-    .select('*, user:profiles(email, full_name)')
-    .eq('status', 'pending')
-    .order('created_at', { ascending: false })
-    .limit(5);
+      // Profile + wallet are auto-created by database triggers on auth.users insert.
+      if (values.referral_code) {
+        const { data: referrer } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('referral_code', values.referral_code.toUpperCase())
+          .maybeSingle();
+        if (referrer) {
+          await supabase
+            .from('profiles')
+            .update({ referred_by: referrer.id })
+            .eq('id', userId);
+        }
+      }
 
-  const { data: pendingWithdrawals } = await supabase
-    .from('withdrawals')
-    .select('*, user:profiles(email, full_name)')
-    .eq('status', 'pending')
-    .order('created_at', { ascending: false })
-    .limit(5);
-
-  const { data: recentUsers } = await supabase
-    .from('profiles')
-    .select('email, full_name, created_at')
-    .order('created_at', { ascending: false })
-    .limit(5);
+      toast.success('Account created. Welcome to Icetropez.Vest!');
+      router.push('/dashboard');
+      router.refresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Registration failed';
+      toast.error(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Admin Overview</h1>
-        <p className="text-sm text-muted-foreground">Platform summary and pending actions.</p>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Total users" value={String(userCount ?? 0)} icon={Users} accent="primary" />
-        <StatCard label="Pending deposits" value={String(depositCount ?? 0)} icon={ArrowDownToLine} accent="success" />
-        <StatCard label="Pending withdrawals" value={String(withdrawalCount ?? 0)} icon={ArrowUpFromLine} accent="warning" />
-        <StatCard label="Active investments" value={String(investmentCount ?? 0)} icon={TrendingUp} accent="primary" />
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>Pending deposits</CardTitle>
-            <Button asChild size="sm" variant="outline">
-              <Link href="/admin/deposits">Review all</Link>
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(pendingDeposits ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No pending deposits.</p>
-            ) : (
-              (pendingDeposits ?? []).map((d) => (
-                <div key={d.id} className="flex items-center justify-between rounded-lg border p-3">
-                  <div>
-                    <p className="text-sm font-medium">{d.user?.full_name ?? d.user?.email}</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(d.created_at)}</p>
-                  </div>
-                  <span className="text-sm font-semibold">{formatCurrency(Number(d.amount))}</span>
-                </div>
-              ))
+    <Card className="border-none shadow-none">
+      <CardHeader className="space-y-3 text-center">
+        <Link href="/" className="mx-auto flex items-center gap-2 text-lg font-bold lg:hidden">
+          <ShieldCheck className="h-6 w-6 text-primary" />
+          Icetropez.Vest
+        </Link>
+        <div>
+          <CardTitle className="text-2xl">Create your account</CardTitle>
+          <CardDescription>Start investing in minutes</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="full_name">Full name</Label>
+            <Input id="full_name" placeholder="Jane Doe" {...register('full_name')} />
+            {errors.full_name && <p className="text-sm text-destructive">{errors.full_name.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="email">Email</Label>
+            <Input id="email" type="email" placeholder="you@example.com" {...register('email')} />
+            {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="phone">Phone (optional)</Label>
+            <Input id="phone" placeholder="+27 71 234 5678" {...register('phone')} />
+            {errors.phone && <p className="text-sm text-destructive">{errors.phone.message}</p>}
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input id="password" type="password" placeholder="••••••••" {...register('password')} />
+              {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm</Label>
+              <Input id="confirmPassword" type="password" placeholder="••••••••" {...register('confirmPassword')} />
+              {errors.confirmPassword && (
+                <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
+              )}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="referral_code">Referral code (optional)</Label>
+            <Input id="referral_code" placeholder="ABCD12" {...register('referral_code')} />
+            {errors.referral_code && (
+              <p className="text-sm text-destructive">{errors.referral_code.message}</p>
             )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>Pending withdrawals</CardTitle>
-            <Button asChild size="sm" variant="outline">
-              <Link href="/admin/withdrawals">Review all</Link>
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(pendingWithdrawals ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No pending withdrawals.</p>
-            ) : (
-              (pendingWithdrawals ?? []).map((w) => (
-                <div key={w.id} className="flex items-center justify-between rounded-lg border p-3">
-                  <div>
-                    <p className="text-sm font-medium">{w.user?.full_name ?? w.user?.email}</p>
-                    <p className="text-xs text-muted-foreground">{formatDate(w.created_at)}</p>
-                  </div>
-                  <span className="text-sm font-semibold">{formatCurrency(Number(w.amount))}</span>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader><CardTitle>Recent sign-ups</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {(recentUsers ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">No users yet.</p>
-          ) : (
-            (recentUsers ?? []).map((u) => (
-              <div key={u.email} className="flex items-center justify-between rounded-lg border p-3">
-                <div>
-                  <p className="text-sm font-medium">{u.full_name ?? u.email}</p>
-                  <p className="text-xs text-muted-foreground">{u.email}</p>
-                </div>
-                <Badge variant="secondary">{formatDate(u.created_at)}</Badge>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-    </div>
+          </div>
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Create account
+          </Button>
+        </form>
+        <p className="mt-6 text-center text-sm text-muted-foreground">
+          Already have an account?{' '}
+          <Link href="/auth/login" className="font-medium text-primary hover:underline">
+            Sign in
+          </Link>
+        </p>
+      </CardContent>
+    </Card>
   );
 }
