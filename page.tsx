@@ -1,110 +1,107 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
-import { Bell, CheckCheck, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import { useAuth } from '@/components/providers/auth-provider';
+import { profileSchema, type ProfileInput } from '@/lib/validation';
 import { createClient } from '@/lib/supabase/client';
-import { formatDateTime } from '@/lib/constants';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Skeleton } from '@/components/ui/skeleton';
 
-interface NotificationRow {
-  id: string;
-  type: 'info' | 'success' | 'warning' | 'error';
-  title: string;
-  message: string;
-  read: boolean;
-  created_at: string;
-}
-
-export default function NotificationsPage() {
+export default function ProfilePage() {
+  const { profile, refreshProfile } = useAuth();
   const supabase = createClient();
-  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
-  const load = async () => {
-    const { data } = await supabase
-      .from('notifications')
-      .select('*')
-      .order('created_at', { ascending: false });
-    setNotifications((data as NotificationRow[]) ?? []);
-    setLoading(false);
-  };
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<ProfileInput>({
+    resolver: zodResolver(profileSchema),
+    defaultValues: {
+      full_name: profile?.full_name ?? '',
+      phone: profile?.phone ?? '',
+    },
+  });
 
-  useEffect(() => {
-    load();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const markAllRead = async () => {
-    const unread = notifications.filter((n) => !n.read).map((n) => n.id);
-    if (unread.length === 0) return;
+  const onSubmit = async (values: ProfileInput) => {
+    if (!profile) return;
+    setLoading(true);
     const { error } = await supabase
-      .from('notifications')
-      .update({ read: true })
-      .in('id', unread);
+      .from('profiles')
+      .update({
+        full_name: values.full_name,
+        phone: values.phone || null,
+      })
+      .eq('id', profile.id);
+    setLoading(false);
     if (error) {
       toast.error(error.message);
       return;
     }
-    toast.success('All notifications marked as read.');
-    load();
+    await refreshProfile();
+    toast.success('Profile updated.');
   };
 
-  const variantMap: Record<NotificationRow['type'], 'default' | 'secondary' | 'destructive' | 'outline'> = {
-    info: 'secondary',
-    success: 'default',
-    warning: 'outline',
-    error: 'destructive',
-  };
+  if (!profile) return null;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Notifications</h1>
-          <p className="text-sm text-muted-foreground">Stay up to date with your account activity.</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={markAllRead}>
-          <CheckCheck className="mr-2 h-4 w-4" /> Mark all read
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Profile</h1>
+        <p className="text-sm text-muted-foreground">Manage your account details.</p>
       </div>
 
       <Card>
-        <CardHeader><CardTitle>Inbox</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          {loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-16 w-full" />
-              ))}
+        <CardHeader>
+          <div className="flex items-center gap-4">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-xl font-bold text-primary">
+              {(profile.full_name ?? profile.email)[0].toUpperCase()}
             </div>
-          ) : notifications.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Bell className="h-10 w-10 text-muted-foreground/50" />
-              <p className="mt-3 text-sm text-muted-foreground">No notifications yet.</p>
+            <div>
+              <CardTitle>{profile.full_name ?? 'User'}</CardTitle>
+              <CardDescription>{profile.email}</CardDescription>
+              <Badge className="mt-1 capitalize" variant={profile.role === 'admin' ? 'default' : 'secondary'}>
+                {profile.role}
+              </Badge>
             </div>
-          ) : (
-            notifications.map((n) => (
-              <div
-                key={n.id}
-                className={`flex items-start gap-3 rounded-lg border p-4 transition-colors ${
-                  n.read ? 'bg-card' : 'bg-primary/5'
-                }`}
-              >
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-medium">{n.title}</p>
-                    <Badge variant={variantMap[n.type]} className="capitalize">{n.type}</Badge>
-                    {!n.read && <span className="h-2 w-2 rounded-full bg-primary" />}
-                  </div>
-                  <p className="mt-1 text-sm text-muted-foreground">{n.message}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{formatDateTime(n.created_at)}</p>
-                </div>
-              </div>
-            ))
-          )}
+          </div>
+        </CardHeader>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Personal information</CardTitle>
+          <CardDescription>Update your name and phone number.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="full_name">Full name</Label>
+              <Input id="full_name" {...register('full_name')} />
+              {errors.full_name && <p className="text-sm text-destructive">{errors.full_name.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="phone">Phone</Label>
+              <Input id="phone" placeholder="+27 71 234 5678" {...register('phone')} />
+              {errors.phone && <p className="text-sm text-destructive">{errors.phone.message}</p>}
+            </div>
+            <div className="space-y-2">
+              <Label>Referral code</Label>
+              <Input readOnly value={profile.referral_code} className="font-mono" />
+            </div>
+            <Button type="submit" disabled={loading}>
+              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save changes
+            </Button>
+          </form>
         </CardContent>
       </Card>
     </div>
