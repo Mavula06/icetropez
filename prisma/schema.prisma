@@ -1,0 +1,14 @@
+model CompanyBank {
+  id             String   @id @default(cuid())
+  companyName    String
+  bankName       String
+  accountNumber  String
+  branchCode     String
+  accountType    String
+  supportEmail   String?
+  supportPhone   String?
+  isActive       Boolean  @default(true)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
