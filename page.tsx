@@ -1,127 +1,124 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
-import { Check, Loader2, X } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+import Link from 'next/link';
+import { ArrowDownToLine, ArrowUpFromLine, TrendingUp, Users, Wallet } from 'lucide-react';
+import { createClient } from '@/lib/supabase/server';
 import { formatCurrency, formatDate } from '@/lib/constants';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { StatCard } from '@/components/dashboard/stat-card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Button } from '@/components/ui/button';
 
-interface WithdrawalRow {
-  id: string;
-  amount: number;
-  bank_name: string | null;
-  account_number: string | null;
-  branch_code: string | null;
-  account_holder: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-  created_at: string;
-  user: { email: string; full_name: string | null } | null;
-}
+export const dynamic = 'force-dynamic';
 
-export default function AdminWithdrawalsPage() {
-  const supabase = createClient();
-  const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
+export default async function AdminOverview() {
+  const supabase = await createClient();
 
-  const load = async () => {
-    let q = supabase.from('withdrawals').select('*, user:profiles(email, full_name)').order('created_at', { ascending: false });
-    if (filter !== 'all') q = q.eq('status', filter);
-    const { data } = await q;
-    setWithdrawals((data as WithdrawalRow[]) ?? []);
-    setLoading(false);
-  };
+  const [{ count: userCount }, { count: depositCount }, { count: withdrawalCount }, { count: investmentCount }] =
+    await Promise.all([
+      supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'user'),
+      supabase.from('deposits').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('investments').select('*', { count: 'exact', head: true }).eq('status', 'active'),
+    ]);
 
-  useEffect(() => {
-    load();
-  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { data: pendingDeposits } = await supabase
+    .from('deposits')
+    .select('*, user:profiles(email, full_name)')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(5);
 
-  const processWithdrawal = async (withdrawalId: string, action: 'approve' | 'reject') => {
-    setProcessing(withdrawalId);
-    const res = await fetch('/api/admin/withdrawals', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ withdrawalId, action }),
-    });
-    const json = await res.json();
-    setProcessing(null);
-    if (!res.ok) {
-      toast.error(json.error ?? 'Failed to process withdrawal');
-      return;
-    }
-    toast.success(`Withdrawal ${json.status}.`);
-    load();
-  };
+  const { data: pendingWithdrawals } = await supabase
+    .from('withdrawals')
+    .select('*, user:profiles(email, full_name)')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(5);
 
-  const statusVariant = (s: WithdrawalRow['status']) =>
-    s === 'approved' ? 'default' : s === 'rejected' ? 'destructive' : 'secondary';
+  const { data: recentUsers } = await supabase
+    .from('profiles')
+    .select('email, full_name, created_at')
+    .order('created_at', { ascending: false })
+    .limit(5);
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Withdrawals</h1>
-        <p className="text-sm text-muted-foreground">Review and approve user withdrawal requests.</p>
+        <h1 className="text-2xl font-bold">Admin Overview</h1>
+        <p className="text-sm text-muted-foreground">Platform summary and pending actions.</p>
       </div>
 
-      <div className="flex gap-2">
-        {(['pending', 'approved', 'rejected', 'all'] as const).map((f) => (
-          <Button key={f} size="sm" variant={filter === f ? 'default' : 'outline'} onClick={() => setFilter(f)} className="capitalize">
-            {f}
-          </Button>
-        ))}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Total users" value={String(userCount ?? 0)} icon={Users} accent="primary" />
+        <StatCard label="Pending deposits" value={String(depositCount ?? 0)} icon={ArrowDownToLine} accent="success" />
+        <StatCard label="Pending withdrawals" value={String(withdrawalCount ?? 0)} icon={ArrowUpFromLine} accent="warning" />
+        <StatCard label="Active investments" value={String(investmentCount ?? 0)} icon={TrendingUp} accent="primary" />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle>Pending deposits</CardTitle>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/admin/deposits">Review all</Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(pendingDeposits ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pending deposits.</p>
+            ) : (
+              (pendingDeposits ?? []).map((d) => (
+                <div key={d.id} className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-medium">{d.user?.full_name ?? d.user?.email}</p>
+                    <p className="text-xs text-muted-foreground">{formatDate(d.created_at)}</p>
+                  </div>
+                  <span className="text-sm font-semibold">{formatCurrency(Number(d.amount))}</span>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <CardTitle>Pending withdrawals</CardTitle>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/admin/withdrawals">Review all</Link>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {(pendingWithdrawals ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pending withdrawals.</p>
+            ) : (
+              (pendingWithdrawals ?? []).map((w) => (
+                <div key={w.id} className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-medium">{w.user?.full_name ?? w.user?.email}</p>
+                    <p className="text-xs text-muted-foreground">{formatDate(w.created_at)}</p>
+                  </div>
+                  <span className="text-sm font-semibold">{formatCurrency(Number(w.amount))}</span>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
-        <CardContent className="pt-6">
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : withdrawals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No withdrawals found.</p>
+        <CardHeader><CardTitle>Recent sign-ups</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {(recentUsers ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No users yet.</p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>User</TableHead>
-                  <TableHead>Bank</TableHead>
-                  <TableHead>Account</TableHead>
-                  <TableHead>Holder</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {withdrawals.map((w) => (
-                  <TableRow key={w.id}>
-                    <TableCell className="whitespace-nowrap">{formatDate(w.created_at)}</TableCell>
-                    <TableCell>{w.user?.full_name ?? w.user?.email ?? 'Unknown'}</TableCell>
-                    <TableCell>{w.bank_name ?? '—'}</TableCell>
-                    <TableCell className="font-mono text-xs">{w.account_number ?? '—'}</TableCell>
-                    <TableCell>{w.account_holder ?? '—'}</TableCell>
-                    <TableCell className="text-right font-medium">{formatCurrency(Number(w.amount))}</TableCell>
-                    <TableCell><Badge variant={statusVariant(w.status)} className="capitalize">{w.status}</Badge></TableCell>
-                    <TableCell>
-                      {w.status === 'pending' ? (
-                        <div className="flex gap-1">
-                          <Button size="sm" onClick={() => processWithdrawal(w.id, 'approve')} disabled={processing === w.id}>
-                            {processing === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                          </Button>
-                          <Button size="sm" variant="destructive" onClick={() => processWithdrawal(w.id, 'reject')} disabled={processing === w.id}>
-                            {processing === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
-                          </Button>
-                        </div>
-                      ) : '—'}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            (recentUsers ?? []).map((u) => (
+              <div key={u.email} className="flex items-center justify-between rounded-lg border p-3">
+                <div>
+                  <p className="text-sm font-medium">{u.full_name ?? u.email}</p>
+                  <p className="text-xs text-muted-foreground">{u.email}</p>
+                </div>
+                <Badge variant="secondary">{formatDate(u.created_at)}</Badge>
+              </div>
+            ))
           )}
         </CardContent>
       </Card>
