@@ -1,143 +1,91 @@
+'use client';
+
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { ArrowDownToLine, ArrowUpFromLine, TrendingUp, Wallet as WalletIcon } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
-import { formatCurrency, formatDate } from '@/lib/constants';
-import { StatCard } from '@/components/dashboard/stat-card';
-import { WalletChart } from '@/components/dashboard/wallet-chart';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useRouter } from 'next/navigation';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { toast } from 'sonner';
+import { Loader2, ShieldCheck } from 'lucide-react';
+import { resetPasswordSchema, type ResetPasswordInput } from '@/lib/validation';
+import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
-export const dynamic = 'force-dynamic';
+export default function ResetPasswordPage() {
+  const router = useRouter();
+  const supabase = createClient();
+  const [loading, setLoading] = useState(false);
+  const [verifying, setVerifying] = useState(true);
 
-export default async function DashboardPage() {
-  const supabase = await createClient();
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<ResetPasswordInput>({ resolver: zodResolver(resetPasswordSchema) });
 
-  const [{ data: wallet }, { data: transactions }, { data: investments }] = await Promise.all([
-    supabase.from('wallets').select('*').eq('user_id', user.id).maybeSingle(),
-    supabase
-      .from('transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(20),
-    supabase
-      .from('investments')
-      .select('*, plan:investment_plans(*)')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(5),
-  ]);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) setVerifying(false);
+      else router.replace('/auth/forgot-password');
+    });
+  }, [router, supabase]);
 
-  const balance = wallet?.balance ?? 0;
-  const totalDeposited = wallet?.total_deposited ?? 0;
-  const totalWithdrawn = wallet?.total_withdrawn ?? 0;
-  const totalEarnings = wallet?.total_earnings ?? 0;
+  const onSubmit = async (values: ResetPasswordInput) => {
+    setLoading(true);
+    const { error } = await supabase.auth.updateUser({ password: values.password });
+    setLoading(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    toast.success('Password updated. Please sign in.');
+    await supabase.auth.signOut();
+    router.push('/auth/login');
+  };
 
-  // Build chart data from last 14 transactions (reversed for chronological order)
-  const chartData = (transactions ?? [])
-    .slice()
-    .reverse()
-    .slice(-14)
-    .map((t) => ({
-      label: formatDate(t.created_at).split(' ')[1] ?? formatDate(t.created_at),
-      value: Number(t.balance_after),
-    }));
-
-  const recent = (transactions ?? []).slice(0, 6);
+  if (verifying) {
+    return (
+      <div className="flex items-center justify-center py-10">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">An overview of your wallet and investments.</p>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Wallet balance" value={formatCurrency(balance)} icon={WalletIcon} accent="primary" />
-        <StatCard label="Total deposited" value={formatCurrency(totalDeposited)} icon={ArrowDownToLine} accent="success" />
-        <StatCard label="Total withdrawn" value={formatCurrency(totalWithdrawn)} icon={ArrowUpFromLine} accent="warning" />
-        <StatCard label="Total earnings" value={formatCurrency(totalEarnings)} icon={TrendingUp} accent="success" />
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Wallet balance history</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {chartData.length > 0 ? (
-              <WalletChart data={chartData} />
-            ) : (
-              <div className="flex h-[260px] items-center justify-center text-sm text-muted-foreground">
-                No transactions yet. Make your first deposit to see your balance grow.
-              </div>
+    <Card className="border-none shadow-none">
+      <CardHeader className="space-y-3 text-center">
+        <Link href="/" className="mx-auto flex items-center gap-2 text-lg font-bold lg:hidden">
+          <ShieldCheck className="h-6 w-6 text-primary" />
+          Icetropez.Vest
+        </Link>
+        <div>
+          <CardTitle className="text-2xl">Set a new password</CardTitle>
+          <CardDescription>Choose a strong password for your account</CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="password">New password</Label>
+            <Input id="password" type="password" placeholder="••••••••" {...register('password')} />
+            {errors.password && <p className="text-sm text-destructive">{errors.password.message}</p>}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirmPassword">Confirm password</Label>
+            <Input id="confirmPassword" type="password" placeholder="••••••••" {...register('confirmPassword')} />
+            {errors.confirmPassword && (
+              <p className="text-sm text-destructive">{errors.confirmPassword.message}</p>
             )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <CardTitle>Active investments</CardTitle>
-            <Button asChild size="sm" variant="outline">
-              <Link href="/dashboard/investments">View all</Link>
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {(investments ?? []).length === 0 && (
-              <p className="text-sm text-muted-foreground">No investments yet.</p>
-            )}
-            {(investments ?? []).map((inv) => (
-              <div key={inv.id} className="rounded-lg border p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">{inv.plan?.name ?? 'Plan'}</p>
-                  <Badge variant={inv.status === 'active' ? 'default' : 'secondary'}>
-                    {inv.status}
-                  </Badge>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {formatCurrency(Number(inv.amount))} · ends {formatDate(inv.end_date)}
-                </p>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle>Recent transactions</CardTitle>
-          <Button asChild size="sm" variant="outline">
-            <Link href="/dashboard/transactions">View all</Link>
+          </div>
+          <Button type="submit" className="w-full" disabled={loading}>
+            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Update password
           </Button>
-        </CardHeader>
-        <CardContent>
-          {recent.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No transactions yet.</p>
-          ) : (
-            <div className="space-y-2">
-              {recent.map((t) => {
-                const positive = ['deposit', 'earnings', 'referral', 'bonus'].includes(t.type);
-                return (
-                  <div key={t.id} className="flex items-center justify-between rounded-lg border p-3">
-                    <div>
-                      <p className="text-sm font-medium">{t.description}</p>
-                      <p className="text-xs text-muted-foreground">{formatDate(t.created_at)}</p>
-                    </div>
-                    <p className={`text-sm font-semibold ${positive ? 'text-success' : 'text-destructive'}`}>
-                      {positive ? '+' : '-'}{formatCurrency(Number(t.amount))}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }
