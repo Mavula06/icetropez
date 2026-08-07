@@ -1,112 +1,123 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Download, Search } from 'lucide-react';
+import { toast } from 'sonner';
+import { Check, Loader2, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { formatCurrency, formatDate } from '@/lib/constants';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
-interface UserRow {
+interface WithdrawalRow {
   id: string;
-  email: string;
-  full_name: string | null;
-  role: string;
-  referral_code: string;
+  amount: number;
+  bank_name: string | null;
+  account_number: string | null;
+  branch_code: string | null;
+  account_holder: string | null;
+  status: 'pending' | 'approved' | 'rejected';
   created_at: string;
-  wallet: { balance: number; total_deposited: number } | null;
+  user: { email: string; full_name: string | null } | null;
 }
 
-export default function AdminUsersPage() {
+export default function AdminWithdrawalsPage() {
   const supabase = createClient();
-  const [users, setUsers] = useState<UserRow[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [processing, setProcessing] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
 
   const load = async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, email, full_name, role, referral_code, created_at, wallet:wallets(balance, total_deposited)')
-      .order('created_at', { ascending: false });
-    setUsers((data as unknown as UserRow[]) ?? []);
+    let q = supabase.from('withdrawals').select('*, user:profiles(email, full_name)').order('created_at', { ascending: false });
+    if (filter !== 'all') q = q.eq('status', filter);
+    const { data } = await q;
+    setWithdrawals((data as WithdrawalRow[]) ?? []);
     setLoading(false);
   };
 
   useEffect(() => {
     load();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const filtered = users.filter((u) => {
-    const q = search.toLowerCase();
-    return u.email.toLowerCase().includes(q) || (u.full_name ?? '').toLowerCase().includes(q);
-  });
-
-  const exportCsv = () => {
-    const headers = ['Email', 'Name', 'Role', 'Referral Code', 'Balance', 'Total Deposited', 'Joined'];
-    const rows = filtered.map((u) => [
-      u.email, u.full_name ?? '', u.role, u.referral_code,
-      formatCurrency(u.wallet?.balance ?? 0), formatCurrency(u.wallet?.total_deposited ?? 0),
-      formatDate(u.created_at),
-    ]);
-    const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'users.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+  const processWithdrawal = async (withdrawalId: string, action: 'approve' | 'reject') => {
+    setProcessing(withdrawalId);
+    const res = await fetch('/api/admin/withdrawals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ withdrawalId, action }),
+    });
+    const json = await res.json();
+    setProcessing(null);
+    if (!res.ok) {
+      toast.error(json.error ?? 'Failed to process withdrawal');
+      return;
+    }
+    toast.success(`Withdrawal ${json.status}.`);
+    load();
   };
+
+  const statusVariant = (s: WithdrawalRow['status']) =>
+    s === 'approved' ? 'default' : s === 'rejected' ? 'destructive' : 'secondary';
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Users</h1>
-          <p className="text-sm text-muted-foreground">Manage all platform users.</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={exportCsv}>
-          <Download className="mr-2 h-4 w-4" /> Export CSV
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Withdrawals</h1>
+        <p className="text-sm text-muted-foreground">Review and approve user withdrawal requests.</p>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input placeholder="Search by name or email..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      <div className="flex gap-2">
+        {(['pending', 'approved', 'rejected', 'all'] as const).map((f) => (
+          <Button key={f} size="sm" variant={filter === f ? 'default' : 'outline'} onClick={() => setFilter(f)} className="capitalize">
+            {f}
+          </Button>
+        ))}
       </div>
 
       <Card>
         <CardContent className="pt-6">
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : filtered.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No users found.</p>
+          ) : withdrawals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No withdrawals found.</p>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Referral Code</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                  <TableHead className="text-right">Deposited</TableHead>
-                  <TableHead>Joined</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>User</TableHead>
+                  <TableHead>Bank</TableHead>
+                  <TableHead>Account</TableHead>
+                  <TableHead>Holder</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((u) => (
-                  <TableRow key={u.id}>
-                    <TableCell className="font-medium">{u.full_name ?? '—'}</TableCell>
-                    <TableCell>{u.email}</TableCell>
-                    <TableCell><Badge variant={u.role === 'admin' ? 'default' : 'secondary'} className="capitalize">{u.role}</Badge></TableCell>
-                    <TableCell className="font-mono text-xs">{u.referral_code}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(u.wallet?.balance ?? 0)}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(u.wallet?.total_deposited ?? 0)}</TableCell>
-                    <TableCell className="whitespace-nowrap">{formatDate(u.created_at)}</TableCell>
+                {withdrawals.map((w) => (
+                  <TableRow key={w.id}>
+                    <TableCell className="whitespace-nowrap">{formatDate(w.created_at)}</TableCell>
+                    <TableCell>{w.user?.full_name ?? w.user?.email ?? 'Unknown'}</TableCell>
+                    <TableCell>{w.bank_name ?? '—'}</TableCell>
+                    <TableCell className="font-mono text-xs">{w.account_number ?? '—'}</TableCell>
+                    <TableCell>{w.account_holder ?? '—'}</TableCell>
+                    <TableCell className="text-right font-medium">{formatCurrency(Number(w.amount))}</TableCell>
+                    <TableCell><Badge variant={statusVariant(w.status)} className="capitalize">{w.status}</Badge></TableCell>
+                    <TableCell>
+                      {w.status === 'pending' ? (
+                        <div className="flex gap-1">
+                          <Button size="sm" onClick={() => processWithdrawal(w.id, 'approve')} disabled={processing === w.id}>
+                            {processing === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                          </Button>
+                          <Button size="sm" variant="destructive" onClick={() => processWithdrawal(w.id, 'reject')} disabled={processing === w.id}>
+                            {processing === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
+                      ) : '—'}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
