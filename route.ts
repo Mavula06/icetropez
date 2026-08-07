@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/admin';
-import { formatCurrency } from '@/lib/constants';
+import { settingsSchema } from '@/lib/validation';
 
-export async function POST(req: NextRequest) {
+export async function PUT(req: NextRequest) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -19,79 +19,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
   const body = await req.json();
-  const { withdrawalId, action } = body as { withdrawalId: string; action: 'approve' | 'reject' };
-  if (!withdrawalId || !action) return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
+  const parsed = settingsSchema.safeParse(body);
+  if (!parsed.success)
+    return NextResponse.json({ error: parsed.error.issues[0]?.message ?? 'Invalid input' }, { status: 400 });
 
   const service = createServiceClient();
+  const { data: settings } = await service.from('settings').select('id').maybeSingle();
+  if (!settings) return NextResponse.json({ error: 'Settings row not found' }, { status: 500 });
 
-  const { data: withdrawal } = await service
-    .from('withdrawals')
-    .select('*')
-    .eq('id', withdrawalId)
-    .maybeSingle();
-  if (!withdrawal) return NextResponse.json({ error: 'Withdrawal not found' }, { status: 404 });
-  if (withdrawal.status !== 'pending')
-    return NextResponse.json({ error: 'Withdrawal already processed' }, { status: 400 });
+  const { data, error } = await service.from('settings')
+    .update(parsed.data)
+    .eq('id', settings.id)
+    .select()
+    .single();
 
-  const { data: wallet } = await service
-    .from('wallets')
-    .select('*')
-    .eq('user_id', withdrawal.user_id)
-    .maybeSingle();
-  if (!wallet) return NextResponse.json({ error: 'Wallet not found' }, { status: 500 });
-
-  if (action === 'reject') {
-    await service.from('withdrawals').update({ status: 'rejected' }).eq('id', withdrawalId);
-    await service.from('notifications').insert({
-      user_id: withdrawal.user_id,
-      type: 'warning',
-      title: 'Withdrawal rejected',
-      message: `Your withdrawal request of ${formatCurrency(Number(withdrawal.amount))} was rejected.`,
-    });
-    await service.from('audit_logs').insert({
-      actor_id: user.id,
-      action: 'reject_withdrawal',
-      entity: 'withdrawals',
-      entity_id: withdrawalId,
-      metadata: { amount: withdrawal.amount },
-    });
-    return NextResponse.json({ ok: true, status: 'rejected' });
-  }
-
-  // Approve: deduct from wallet + create transaction
-  const newBalance = Number(wallet.balance) - Number(withdrawal.amount);
-  const newTotalWithdrawn = Number(wallet.total_withdrawn) + Number(withdrawal.amount);
-
-  await service.from('wallets').update({
-    balance: newBalance,
-    total_withdrawn: newTotalWithdrawn,
-  }).eq('id', wallet.id);
-
-  await service.from('withdrawals').update({ status: 'approved' }).eq('id', withdrawalId);
-
-  await service.from('transactions').insert({
-    user_id: withdrawal.user_id,
-    type: 'withdrawal',
-    amount: withdrawal.amount,
-    description: `Withdrawal approved to ${withdrawal.bank_name} (${withdrawal.account_number})`,
-    reference: `WDR-${withdrawal.id.slice(0, 8).toUpperCase()}`,
-    balance_after: newBalance,
-  });
-
-  await service.from('notifications').insert({
-    user_id: withdrawal.user_id,
-    type: 'success',
-    title: 'Withdrawal approved',
-    message: `Your withdrawal of ${formatCurrency(Number(withdrawal.amount))} has been approved and is being processed.`,
-  });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   await service.from('audit_logs').insert({
     actor_id: user.id,
-    action: 'approve_withdrawal',
-    entity: 'withdrawals',
-    entity_id: withdrawalId,
-    metadata: { amount: withdrawal.amount, new_balance: newBalance },
+    action: 'update_settings',
+    entity: 'settings',
+    entity_id: settings.id,
+    metadata: parsed.data,
   });
 
-  return NextResponse.json({ ok: true, status: 'approved' });
+  return NextResponse.json({ ok: true, settings: data });
 }
